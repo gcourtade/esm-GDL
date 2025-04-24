@@ -1,0 +1,17 @@
+annotated-types
+ihm
+injector
+joblib
+modelcif
+msgpack
+pandas
+protobuf
+pydantic
+pydantic_core
+python-dateutil
+pytz
+scikit-learn
+tensorboardX
+threadpoolctl
+typing-inspection
+tzdata
