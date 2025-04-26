@@ -108,7 +108,7 @@ class CombinedE3GATModel(nn.Module):
     
     def __init__(self, node_feature_dim, edge_feature_dim, hidden_dim, output_dim, 
                  num_layers=3, heads=4, dropout=0.1, pool='combined'):
-        
+        super(CombinedE3GATModel, self).__init__()
         self.node_feature_dim = node_feature_dim
         self.edge_feature_dim = edge_feature_dim
         self.hidden_dim = hidden_dim
