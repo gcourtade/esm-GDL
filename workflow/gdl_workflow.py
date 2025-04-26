@@ -9,7 +9,7 @@ from graph.construct_graphs import construct_graphs
 import pandas as pd
 from typing import List, Dict
 from sklearn.model_selection import train_test_split
-from models.GAT.GAT import GATModel
+from models.GAT.GATE3 import CombinedE3GATModel
 import torch
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
@@ -151,13 +151,19 @@ class TrainingWorkflow(GDLWorkflow):
 
         train_graphs, val_graphs = graphs
         node_feature_dimension = train_graphs[0].x.shape[1]
+        edge_feature_dimension = train_graphs[0].edge_attr.shape[1] if hasattr(train_graphs[0], 'edge_attr') else 0
 
-        model = GATModel(node_feature_dimension, workflow_settings.hidden_layer_dimension,
-                         workflow_settings.numbers_of_class, workflow_settings.dropout_rate,
-                         workflow_settings.number_of_heads, workflow_settings.pooling_ratio,
-                         workflow_settings.add_self_loops).to(workflow_settings.device)
+        model = CombinedE3GATModel(
+            node_feature_dim=node_feature_dimension,
+            edge_feature_dim=edge_feature_dimension,
+            hidden_dim=workflow_settings.hidden_layer_dimension,
+            output_dim=workflow_settings.numbers_of_class,
+            num_layers=3,    # might need to add this in your config
+            heads=workflow_settings.number_of_heads,
+            dropout=workflow_settings.dropout_rate
+        ).to(workflow_settings.device)
+
         return model
-
     def execute(self, workflow_settings: ParameterSetter, graphs: List, model: GATModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         train_graphs, val_graphs = graphs
@@ -194,7 +200,7 @@ class TrainingWorkflow(GDLWorkflow):
                 data = data.to(workflow_settings.device)
 
                 if workflow_settings.use_edge_attr:
-                    output = model(data.x, data.edge_index, data.edge_attr, data.batch)
+                    output = model(data.x, data.pos, data.edge_index, data.edge_attr, data.batch)
                 else:
                     output = model(data.x, data.edge_index, None, data.batch)
 

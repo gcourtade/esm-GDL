@@ -24,7 +24,8 @@ def get_edges(workflow_settings: ParameterSetter, data: pd.DataFrame, esm2_conta
                                                             esm2_contact_maps,
                                                             workflow_settings)
 
-    return adjacency_matrices, weights_matrices, data
+    return adjacency_matrices, weights_matrices, atom_coordinates_matrices, data
+
 
 
 def _get_range_for_every_coordinate(atom_coordinates_matrices):

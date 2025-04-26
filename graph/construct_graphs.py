@@ -21,16 +21,24 @@ def construct_graphs(workflow_settings: ParameterSetter, data: pd.DataFrame):
     nodes_features, esm2_contact_maps = nodes.esm2_derived_features(workflow_settings, data)
 
     # edges
-    adjacency_matrices, weights_matrices, data = edges.get_edges(workflow_settings, data, esm2_contact_maps)
+    # Old:
+    # adjacency_matrices, weights_matrices, data = edges.get_edges(workflow_settings, data, esm2_contact_maps)
+
+    # New:  
+    adjacency_matrices, weights_matrices, atom_coordinates_matrices, data = edges.get_edges(workflow_settings, data, esm2_contact_maps)
 
     n_samples = len(adjacency_matrices)
     with tqdm(range(n_samples), total=len(adjacency_matrices), desc="Generating graphs", disable=False) as progress:
         graphs = []
         for i in range(n_samples):
-            graphs.append(to_parse_matrix(adjacency_matrix=adjacency_matrices[i],
-                                          nodes_features=np.array(nodes_features[i], dtype=np.float32),
-                                          weights_matrix=weights_matrices[i],
-                                          label=data.iloc[i]['activity'] if 'activity' in data.columns else None))
+            graphs.append(to_parse_matrix(
+                adjacency_matrix=adjacency_matrices[i],
+                nodes_features=np.array(nodes_features[i], dtype=np.float32),
+                weights_matrix=weights_matrices[i],
+                label=data.iloc[i]['activity'] if 'activity' in data.columns else None,
+                pos=atom_coordinates_matrices[i]  # <-- New: real 3D coordinates!
+            ))
+
             progress.update(1)
 
     return graphs, data
@@ -62,7 +70,8 @@ def to_parse_matrix(adjacency_matrix, nodes_features, weights_matrix, label, eps
     x = torch.tensor(nodes_features, dtype=torch.float32)
     edge_attr = torch.tensor(np.array(e_vec), dtype=torch.float32)
     y = torch.tensor([label], dtype=torch.int64) if label is not None else None
+    pos = torch.tensor(pos, dtype=torch.float32)  # ← load real positions properly
 
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, pos=pos)
     data.validate(raise_on_error=True)
     return data
