@@ -44,7 +44,8 @@ def construct_graphs(workflow_settings: ParameterSetter, data: pd.DataFrame):
     return graphs, data
 
 
-def to_parse_matrix(adjacency_matrix, nodes_features, weights_matrix, label, eps=1e-6):
+def to_parse_matrix(adjacency_matrix, nodes_features, weights_matrix, label, pos, eps=1e-6):
+
     """
     :param label: label
     :param adjacency_matrix: Adjacency matrix with shape (n_nodes, n_nodes)
