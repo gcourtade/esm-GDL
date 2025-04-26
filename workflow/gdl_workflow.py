@@ -200,9 +200,10 @@ class TrainingWorkflow(GDLWorkflow):
                 data = data.to(workflow_settings.device)
 
                 if workflow_settings.use_edge_attr:
-                    output = model(data.x, data.pos, data.edge_index, data.edge_attr, data.batch)
+                    output, _ = model(data.x, data.pos, data.edge_index, data.edge_attr, data.batch)
                 else:
-                    output = model(data.x, data.edge_index, None, data.batch)
+                    output, _ = model(data.x, data.pos, data.edge_index, data.batch)
+
 
                 out = output[0]
                 loss = criterion(out, data.y)
