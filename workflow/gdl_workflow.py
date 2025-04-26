@@ -69,7 +69,7 @@ class GDLWorkflow(ABC):
         return None
 
     @abstractmethod
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: GATModel,
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel,
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         pass
 
@@ -164,7 +164,7 @@ class TrainingWorkflow(GDLWorkflow):
         ).to(workflow_settings.device)
 
         return model
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: GATModel, 
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         train_graphs, val_graphs = graphs
 
@@ -366,7 +366,7 @@ class TestWorkflow(PredictionWorkflow):
         data = super().load_data(workflow_settings, data_loader, dataset_validator)
         return data[data['partition'].isin([3])].reset_index(drop=True)
 
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: GATModel, 
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         dataloader = DataLoader(dataset=graphs, batch_size=workflow_settings.batch_size, shuffle=False)
 
@@ -471,7 +471,7 @@ class InferenceWorkflow(PredictionWorkflow):
         merged_parameters = {**trained_model_parameters, **parameters}
         return ParameterSetter(mode='inference', output_setting=output_setting, **merged_parameters)
 
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: GATModel, 
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         dataloader = DataLoader(dataset=graphs, batch_size=workflow_settings.batch_size, shuffle=False)
 
