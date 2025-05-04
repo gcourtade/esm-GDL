@@ -1,4 +1,11 @@
 #!/bin/bash
+#
+#SBATCH --job-name=esm-GDL
+#SBATCH --mem=2G
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=1-00:00:00
+#SBATCH --gpus=1
 
 dataset="cbms/Avicel_data.csv"
 pdb_path="cbms/ESMFold_pdbs/"
