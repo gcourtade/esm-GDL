@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool, LayerNorm
 from torch_scatter import scatter
 from e3nn import o3
-from e3nn.nn import Sequential, FullyConnectedNet
 from e3nn.o3 import Irreps
 
 
@@ -23,22 +22,38 @@ class E3nnConvLayer(nn.Module):
         self.sh_irreps = o3.Irreps.spherical_harmonics(lmax)
         
         # Network to create edge features from scalar distance
-        self.edge_embedding = FullyConnectedNet(
-            [1, 16, 16, 16], 
-            acts=[torch.nn.SiLU(), torch.nn.SiLU(), torch.nn.SiLU()]
+        self.edge_embedding = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.SiLU(),
+            nn.Linear(16, 16),
+            nn.SiLU(),
+            nn.Linear(16, 16),
+            nn.SiLU()
         )
         
         # Tensor product for combining node features with spherical harmonics
-        self.tp = o3.FullTensorProduct(
-            self.irreps_in, 
-            self.sh_irreps,
-            irreps_out=self.irreps_out
-        )
+        # Depending on your e3nn version, you may need to adjust this
+        try:
+            # Try newer API
+            self.tp = o3.FullTensorProduct(
+                self.irreps_in, 
+                self.sh_irreps,
+                irreps_out=self.irreps_out
+            )
+        except (AttributeError, TypeError):
+            # Fallback to older API
+            self.tp = o3.TensorProduct(
+                self.irreps_in, 
+                self.sh_irreps,
+                self.irreps_out
+            )
         
         # MLP for applying after tensor product
-        self.post_tp_mlp = FullyConnectedNet(
-            [out_features, out_features, out_features],
-            acts=[torch.nn.SiLU(), torch.nn.SiLU()]
+        self.post_tp_mlp = nn.Sequential(
+            nn.Linear(out_features, out_features),
+            nn.SiLU(),
+            nn.Linear(out_features, out_features),
+            nn.SiLU()
         )
         
         self.radius = radius
