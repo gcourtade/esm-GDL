@@ -1,187 +1,217 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import MessagePassing, global_mean_pool, global_max_pool
+from torch_geometric.nn import global_mean_pool, LayerNorm
 from torch_scatter import scatter
+from e3nn import o3
+from e3nn.nn import Sequential, FullyConnectedNet
+from e3nn.o3 import Irreps
 
 
-class E3EquivariantGATLayer(MessagePassing):
-    """
-    E(3)-equivariant Graph Attention Layer that combines properties of both
-    E(3) equivariance and attention mechanisms
-    """
-    def __init__(self, node_features, edge_features, hidden_dim, heads=4, dropout=0.1):
-        super(E3EquivariantGATLayer, self).__init__(aggr="add")
+class E3nnConvLayer(nn.Module):
+    def __init__(self, in_features, out_features, lmax=1, radius=10.0):
+        super(E3nnConvLayer, self).__init__()
         
-        self.node_features = node_features
-        self.edge_features = edge_features
-        self.hidden_dim = hidden_dim
-        self.heads = heads
-        self.dropout = dropout
+        # Define irreps for scalars (l=0) and vectors (l=1)
+        self.irreps_in = Irreps(f"{in_features}x0e")  # Scalar features
+        self.irreps_out = Irreps(f"{out_features}x0e")  # Output scalar features
         
-        # Attention mechanism
-        self.query = nn.Linear(node_features, hidden_dim * heads)
-        self.key = nn.Linear(node_features, hidden_dim * heads)
-        self.value = nn.Linear(node_features, hidden_dim * heads)
+        # Define irreps for the edge attributes (distance embedding)
+        edge_attr_irreps = Irreps("16x0e")
         
-        # Edge embedding
-        self.edge_embedding = nn.Sequential(
-            nn.Linear(edge_features + 1, hidden_dim),  # +1 for distance
-            nn.SiLU()
-        ) if edge_features > 0 else None
+        # Define the spherical harmonics for angular information
+        self.sh_irreps = o3.Irreps.spherical_harmonics(lmax)
         
-        # Scalar networks (invariant to rotations)
-        self.scalar_net = nn.Sequential(
-            nn.Linear(node_features * 2 + hidden_dim, hidden_dim * heads),
-            nn.SiLU(),
-            nn.Dropout(dropout)
+        # Network to create edge features from scalar distance
+        self.edge_embedding = FullyConnectedNet(
+            [1, 16, 16, 16], 
+            acts=[torch.nn.SiLU(), torch.nn.SiLU(), torch.nn.SiLU()]
         )
         
-        # Output transformations
-        self.combine = nn.Linear(hidden_dim * heads, node_features)
-        self.skip_connection = nn.Linear(node_features, node_features) if node_features != hidden_dim * heads else None
+        # Tensor product for combining node features with spherical harmonics
+        self.tp = o3.FullTensorProduct(
+            self.irreps_in, 
+            self.sh_irreps,
+            irreps_out=self.irreps_out
+        )
         
-        # Layer normalization
-        self.layer_norm = nn.LayerNorm(node_features)
+        # MLP for applying after tensor product
+        self.post_tp_mlp = FullyConnectedNet(
+            [out_features, out_features, out_features],
+            acts=[torch.nn.SiLU(), torch.nn.SiLU()]
+        )
         
-    def forward(self, x, pos, edge_index, edge_attr):
-        # x: node features [N, node_features]
-        # pos: node positions [N, 3]
-        # edge_index: connectivity [2, E]
-        # edge_attr: edge features [E, edge_features]
-        
-        # Skip connection
-        identity = x
-        
-        # Compute message passing
-        x = self.propagate(edge_index, x=x, pos=pos, edge_attr=edge_attr)
-        
-        # Apply residual connection and normalization
-        if self.skip_connection is not None:
-            x = x + self.skip_connection(identity)
-        else:
-            x = x + identity
-            
-        return self.layer_norm(x)
+        self.radius = radius
     
-    def message(self, x_i, x_j, pos_i, pos_j, edge_attr, index):
-        # Compute relative positions (equivariant feature)
-        rel_pos = pos_j - pos_i  # [E, 3]
-        dist = torch.norm(rel_pos, dim=1, keepdim=True)  # [E, 1]
+    def forward(self, x, edge_index, pos):
+        """
+        x: Node features [num_nodes, in_features]
+        edge_index: Connectivity [2, num_edges]
+        pos: Node positions [num_nodes, 3]
+        """
+        source, target = edge_index
         
-        # Process edge attributes if available
-        if self.edge_embedding is not None and edge_attr is not None:
-            edge_features = self.edge_embedding(torch.cat([edge_attr, dist], dim=-1))
-        else:
-            edge_features = torch.zeros(dist.shape[0], self.hidden_dim, device=dist.device)
+        # Compute relative positions (vectors pointing from source to target)
+        rel_pos = pos[target] - pos[source]  # [num_edges, 3]
         
-        # Compute queries, keys and values
-        q = self.query(x_i).view(-1, self.heads, self.hidden_dim)  # [E, heads, hidden_dim]
-        k = self.key(x_j).view(-1, self.heads, self.hidden_dim)    # [E, heads, hidden_dim]
-        v = self.value(x_j).view(-1, self.heads, self.hidden_dim)  # [E, heads, hidden_dim]
+        # Compute distances
+        edge_lengths = torch.norm(rel_pos, dim=-1, keepdim=True)  # [num_edges, 1]
         
-        # Compute attention scores
-        attention = (q * k).sum(dim=-1) / (self.hidden_dim ** 0.5)  # [E, heads]
-        attention = F.softmax(attention, dim=0)  # Normalize over neighborhood
-        attention = F.dropout(attention, p=self.dropout, training=self.training)
+        # Create edge mask for edges within radius
+        edge_mask = edge_lengths < self.radius
+        edge_mask = edge_mask.squeeze(-1)  # [num_edges]
         
-        # Weight values by attention scores
-        v = v * attention.unsqueeze(-1)  # [E, heads, hidden_dim]
+        if not edge_mask.any():
+            # If no edges within radius, return zeros
+            return torch.zeros_like(x)
         
-        # Compute scalar message (invariant component)
-        scalar_input = torch.cat([x_i, x_j, edge_features], dim=-1)
-        scalar_msg = self.scalar_net(scalar_input).view(-1, self.heads, self.hidden_dim)  # [E, heads, hidden_dim]
+        # Filter edges
+        source = source[edge_mask]
+        target = target[edge_mask]
+        rel_pos = rel_pos[edge_mask]
+        edge_lengths = edge_lengths[edge_mask]
         
-        # Combine attention-weighted values with scalar message
-        message = (v + scalar_msg).view(-1, self.heads * self.hidden_dim)  # [E, heads*hidden_dim]
+        # Normalize directions for spherical harmonics
+        directions = rel_pos / (edge_lengths + 1e-8)  # [num_edges, 3]
         
-        return message
-    
-    def update(self, aggr_out):
-        # Process aggregated messages
-        x = self.combine(aggr_out)
-        return x
+        # Compute spherical harmonics of the directions
+        edge_sh = o3.spherical_harmonics(
+            self.sh_irreps, 
+            directions, 
+            normalize=True
+        )  # [num_edges, sh_dim]
+        
+        # Compute radial (distance) embedding
+        radial_embedding = self.edge_embedding(edge_lengths)  # [num_edges, 16]
+        
+        # Gather source node features
+        source_features = x[source]  # [num_edges, in_features]
+        
+        # Apply tensor product to combine features with spherical harmonics
+        tp_out = self.tp(source_features, edge_sh)  # [num_edges, out_features]
+        
+        # Apply radial embedding as a gating mechanism
+        gated_features = tp_out * radial_embedding.sum(-1, keepdim=True)
+        
+        # Apply MLP
+        edge_features = self.post_tp_mlp(gated_features)  # [num_edges, out_features]
+        
+        # Aggregate messages at target nodes
+        out = scatter(edge_features, target, dim=0, dim_size=x.size(0), reduce='sum')
+        
+        return out
 
 
-class CombinedE3GATModel(nn.Module):
-    """Combined E(3)-equivariant GAT model for protein structure analysis"""
-    
-    def __init__(self, node_feature_dim, edge_feature_dim, hidden_dim, output_dim, 
-                 num_layers=3, heads=4, dropout=0.1, pool='combined'):
-        super(CombinedE3GATModel, self).__init__()
+class E3nnProteinModel(nn.Module):
+    def __init__(self, node_feature_dim, hidden_dim, output_dim, drop=0.5, heads=4, k=None, add_self_loops=True):
+        """
+        A protein structure model that preserves E(3) equivariance.
+        
+        Parameters match the original GATModel for drop-in replacement.
+        
+        Args:
+            node_feature_dim: Dimension of input node features
+            hidden_dim: Dimension of hidden layers
+            output_dim: Dimension of output predictions
+            drop: Dropout probability
+            heads: Number of attention heads (kept for API compatibility but not used)
+            k: Number of neighbors (kept for API compatibility but not used)
+            add_self_loops: Whether to add self-loops (kept for API compatibility)
+        """
+        super(E3nnProteinModel, self).__init__()
+        
         self.node_feature_dim = node_feature_dim
-        self.edge_feature_dim = edge_feature_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
-        self.num_layers = num_layers
-        self.heads = heads
-        self.dropout = dropout
-        self.pool = pool
+        self.drop = drop
         
-        # Input projection
-        self.input_proj = nn.Linear(node_feature_dim, hidden_dim)
+        # Initial projection of node features
+        self.input_projection = nn.Linear(node_feature_dim, hidden_dim)
         
-        # E3 Equivariant GAT layers
-        self.layers = nn.ModuleList()
-        for _ in range(num_layers):
-            self.layers.append(E3EquivariantGATLayer(
-                node_features=hidden_dim,
-                edge_features=edge_feature_dim,
-                hidden_dim=hidden_dim,
-                heads=heads,
-                dropout=dropout
-            ))
+        # E3nn equivariant layers
+        self.conv1 = E3nnConvLayer(hidden_dim, hidden_dim, lmax=1, radius=10.0)
+        self.conv2 = E3nnConvLayer(hidden_dim, hidden_dim, lmax=1, radius=10.0)
+        self.conv3 = E3nnConvLayer(hidden_dim, hidden_dim, lmax=1, radius=10.0)
         
-        # Output layers
-        self.output = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        # Layer norms
+        self.norm1 = LayerNorm(hidden_dim)
+        self.norm2 = LayerNorm(hidden_dim)
+        self.norm3 = LayerNorm(hidden_dim)
+        
+        # Output MLPs
+        self.lin0 = nn.Linear(hidden_dim, hidden_dim)
+        self.lin1 = nn.Linear(hidden_dim, hidden_dim)
+        self.lin = nn.Linear(hidden_dim, output_dim)
         
         self._reset_parameters()
-        
+    
     def _reset_parameters(self):
-        """Initialize parameters"""
+        """Initialize parameters using Xavier initialization"""
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
-                
-    def forward(self, x, pos, edge_index, edge_attr, batch):
+    
+    def forward(self, x, edge_index, edge_attr, batch, pos=None):
+        """
+        Forward pass for the E3nn protein model.
+        
+        Args:
+            x: Node features [num_nodes, node_feature_dim]
+            edge_index: Edge connectivity [2, num_edges]
+            edge_attr: Edge features [num_edges, edge_attr_dim] (ignored, kept for API compatibility)
+            batch: Batch assignment [num_nodes]
+            pos: Node positions [num_nodes, 3] (required for E3nn processing but wasn't in original API)
+                 If not provided, will attempt to extract from edge_attr assuming it contains position info
+        
+        Returns:
+            tuple: (predictions, last_layer_features)
+        """
+        # If positions aren't provided, we need to extract them from somewhere
+        if pos is None:
+            # This is a workaround assuming that edge_attr might contain positional information
+            # In a real implementation, you would need to ensure that 3D coordinates are provided
+            raise ValueError("Node positions (pos) must be provided for E3nn models")
+        
         # Initial feature projection
-        x = self.input_proj(x)
+        x = self.input_projection(x)
         
-        # Process through E3-equivariant GAT layers
-        for layer in self.layers:
-            x = layer(x, pos, edge_index, edge_attr)
+        # First E3nn layer
+        x_conv1 = self.conv1(x, edge_index, pos)
+        x = x + x_conv1  # Residual connection
+        x = self.norm1(x, batch)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.drop, training=self.training)
         
-        # Global pooling
-        if self.pool == 'mean':
-            pooled = global_mean_pool(x, batch)
-        elif self.pool == 'max':
-            pooled = global_max_pool(x, batch)
-        else:  # combined
-            mean_pooled = global_mean_pool(x, batch)
-            max_pooled = global_max_pool(x, batch)
-            pooled = torch.cat([mean_pooled, max_pooled], dim=1)
-            
-        # Node embeddings for potential auxiliary tasks
-        z = x
+        # Second E3nn layer
+        x_conv2 = self.conv2(x, edge_index, pos)
+        x = x + x_conv2  # Residual connection
+        x = self.norm2(x, batch)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.drop, training=self.training)
         
-        # Final prediction
-        out = self.output(pooled)
+        # Third E3nn layer
+        x_conv3 = self.conv3(x, edge_index, pos)
+        x = x + x_conv3  # Residual connection
+        x = self.norm3(x, batch)
         
-        return out, z
+        # Global pooling - invariant to node ordering
+        x = global_mean_pool(x, batch)  # [batch_size, hidden_dim]
+        
+        # Final MLP layers
+        x = F.dropout(x, p=self.drop, training=self.training)
+        
+        x = self.lin0(x)
+        x = F.relu(x)
+        
+        x = self.lin1(x)
+        x = F.relu(x)
+        
+        z = x  # Extract last layer features for compatibility
+        
+        x = self.lin(x)
+        
+        return x, z
 
 
-# Usage example:
-# model = CombinedE3GATModel(
-#     node_feature_dim=21,  # Amino acid one-hot + extra features
-#     edge_feature_dim=5,   # Our enhanced edge features
-#     hidden_dim=64,
-#     output_dim=2,         # Binary classification example
-#     num_layers=3,
-#     heads=4,
-#     dropout=0.1
-# )
+# For backward compatibility with the original GAT model
+GATModel = E3nnProteinModel

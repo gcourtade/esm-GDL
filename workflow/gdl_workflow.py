@@ -9,7 +9,7 @@ from graph.construct_graphs import construct_graphs
 import pandas as pd
 from typing import List, Dict
 from sklearn.model_selection import train_test_split
-from models.GAT.GATE3 import CombinedE3GATModel
+from models.GAT.GATE3 import E3nnProteinModel
 import torch
 from torch_geometric.loader import DataLoader
 import torch.nn.functional as F
@@ -69,7 +69,7 @@ class GDLWorkflow(ABC):
         return None
 
     @abstractmethod
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel,
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: E3nnProteinModel,
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         pass
 
@@ -153,18 +153,17 @@ class TrainingWorkflow(GDLWorkflow):
         node_feature_dimension = train_graphs[0].x.shape[1]
         edge_feature_dimension = train_graphs[0].edge_attr.shape[1] if hasattr(train_graphs[0], 'edge_attr') else 0
 
-        model = CombinedE3GATModel(
+        model = E3nnProteinModel(
             node_feature_dim=node_feature_dimension,
-            edge_feature_dim=edge_feature_dimension,
             hidden_dim=workflow_settings.hidden_layer_dimension,
             output_dim=workflow_settings.numbers_of_class,
-            num_layers=3,    # might need to add this in your config
             heads=workflow_settings.number_of_heads,
-            dropout=workflow_settings.dropout_rate
+            drop=workflow_settings.dropout_rate,
+            add_self_loops=workflow_settings.add_self_loops
         ).to(workflow_settings.device)
 
         return model
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel, 
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: E3nnProteinModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         train_graphs, val_graphs = graphs
 
@@ -172,12 +171,7 @@ class TrainingWorkflow(GDLWorkflow):
 
         optimizer = torch.optim.Adam(model.parameters(), workflow_settings.learning_rate, weight_decay=5e-4)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.9)
-        # fix class imbalance
-        num_neg = len(data[data['activity'] == 0])
-        num_pos = len(data[data['activity'] == 1])
-        pos_weight = torch.tensor(num_neg/num_pos, device=workflow_settings.device)
-        class_weights = torch.tensor([1.0, pos_weight], device=workflow_settings.device)
-        # original
+
         criterion = torch.nn.CrossEntropyLoss()
 
 
@@ -200,9 +194,9 @@ class TrainingWorkflow(GDLWorkflow):
                 data = data.to(workflow_settings.device)
 
                 if workflow_settings.use_edge_attr:
-                    output = model(data.x, data.pos, data.edge_index, data.edge_attr, data.batch)
+                    output = model(data.x, data.edge_index, data.edge_attr, data.batch, data.pos)
                 else:
-                    output = model(data.x, data.pos, data.edge_index, data.batch)
+                    output = model(data.x, data.edge_index, None, data.batch, data.pos)
 
 
                 out = output[0]
@@ -368,7 +362,7 @@ class TestWorkflow(PredictionWorkflow):
         data = super().load_data(workflow_settings, data_loader, dataset_validator)
         return data[data['partition'].isin([3])].reset_index(drop=True)
 
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel, 
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: E3nnProteinModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         dataloader = DataLoader(dataset=graphs, batch_size=workflow_settings.batch_size, shuffle=False)
 
@@ -473,7 +467,7 @@ class InferenceWorkflow(PredictionWorkflow):
         merged_parameters = {**trained_model_parameters, **parameters}
         return ParameterSetter(mode='inference', output_setting=output_setting, **merged_parameters)
 
-    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: CombinedE3GATModel, 
+    def execute(self, workflow_settings: ParameterSetter, graphs: List, model: E3nnProteinModel, 
                 classification_metrics: ClassificationMetricsContext, data: pd.DataFrame) -> Dict:
         dataloader = DataLoader(dataset=graphs, batch_size=workflow_settings.batch_size, shuffle=False)
 
