@@ -23,6 +23,13 @@ class EquivariantConv(MessagePassing):
         # x: [N, C_in] flattened repr of irreps_in
         # pos: [N, 3] node coordinates
         # Compute relative displacement for each edge
+
+        # Ensure edge_index is a [2, E] tensor, transpose if needed
+        if edge_index.ndim == 2 and edge_index.size(0) != 2 and edge_index.size(1) == 2:
+            edge_index = edge_index.t().contiguous()
+        if edge_index.ndim != 2 or edge_index.size(0) != 2:
+            raise ValueError(f"edge_index must have shape [2, E], got {tuple(edge_index.shape)}")
+        
         row, col = edge_index
         edge_vec = pos[row] - pos[col]                           # [E, 3]
         # Compute spherical harmonics Y^l_m on each edge
