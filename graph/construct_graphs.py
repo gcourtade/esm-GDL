@@ -55,27 +55,25 @@ def to_parse_matrix(adjacency_matrix, nodes_features, weights_matrix, label, pos
     :param eps: default eps=1e-6
     :return:
     """
-    # Convert dense adjacency to sparse edge_index ([2, E]) plus optional per-edge weights ([E, F])
-    A = torch.from_numpy(adjacency_matrix).to(torch.long)
-    edge_index, _ = dense_to_sparse(A)             # edge_index: [2, E]
 
-    # Build edge_attr if you supplied weights_matrix
-    if weights_matrix is not None and weights_matrix.size:
-        # weights_matrix: (N, N, F)
-        W = torch.from_numpy(weights_matrix).float()
-        row, col = edge_index
-        edge_attr = W[row, col]                    # shape [E, F]
-    else:
-        edge_attr = None
+    num_row, num_col = adjacency_matrix.shape
+    rows = []
+    cols = []
+    e_vec = []
 
-    x = torch.from_numpy(nodes_features).float()    # [N, in_feats]
+    for i in range(num_row):
+        for j in range(num_col):
+            if adjacency_matrix[i][j] >= eps:
+                rows.append(i)
+                cols.append(j)
+                if weights_matrix.size > 0:
+                    e_vec.append(weights_matrix[i][j])
+    edge_index = torch.tensor([rows, cols], dtype=torch.int64)
+    x = torch.tensor(nodes_features, dtype=torch.float32)
+    edge_attr = torch.tensor(np.array(e_vec), dtype=torch.float32)
     y = torch.tensor([label], dtype=torch.int64) if label is not None else None
-    pos = torch.from_numpy(pos).float()             # [N, 3]
+    pos = torch.tensor(pos, dtype=torch.float32)  # ← load real positions properly
 
-    data = Data(x=x,
-                edge_index=edge_index,
-                edge_attr=edge_attr,
-                y=y,
-                pos=pos)
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, pos=pos)
     data.validate(raise_on_error=True)
     return data

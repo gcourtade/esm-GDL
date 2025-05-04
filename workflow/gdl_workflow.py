@@ -224,9 +224,9 @@ class TrainingWorkflow(GDLWorkflow):
                     data = data.to(workflow_settings.device)
 
                     if workflow_settings.use_edge_attr:
-                        output = model(data.x, data.pos, data.edge_index, data.edge_attr, data.batch)
+                        output = model(data.x, data.edge_index, data.edge_attr, data.batch, data.pos)
                     else:
-                        output = model(data.x, data.pos, data.edge_index, data.batch)
+                        output = model(data.x, data.edge_index, None, data.batch, data.pos)
 
 
                     out = output[0]
