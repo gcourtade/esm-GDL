@@ -20,7 +20,7 @@ number_of_epoch=200
 #mkdir -p $pdb_path
 rm -r $gdl_model_path
 
-python=/home/nmrbox/gcourtade/miniforge3/envs/esm-gdl/bin/python
+python=/triumvirate/apps/miniforge3/envs/esm-gdl/bin/python
 $python train.py \
     --dataset "$dataset" \
     --pdb_path "$pdb_path" \
