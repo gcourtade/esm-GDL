@@ -192,7 +192,7 @@ class TrainingWorkflow(GDLWorkflow):
             for data in train_dataloader:
                 optimizer.zero_grad()
                 data = data.to(workflow_settings.device)
-
+                
                 if workflow_settings.use_edge_attr:
                     output = model(data.x, data.edge_index, data.edge_attr, data.batch, data.pos)
                 else:
